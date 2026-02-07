@@ -2,6 +2,8 @@ Before comparing PyTorch Mobile, ONNX Runtime, and TensorFlow Lite, I’ll first
 models to validate the pipeline before going mobile. This provides a baseline in case issues arise later (quantization,
 mobile runtimes, ONNX export, etc.), making it easier to pinpoint where problems occur and to sanity-check performance.
 
+<br>
+
 # Loading MobileNet‑V2 in Eager mode | Eager vs TorchScript
 > src/mobilenet_baseline.py
 
@@ -39,6 +41,8 @@ ImageNet, which contains 1000 classes, so the model outputs a vector of 1000 val
 values are logits, i.e. raw, unnormalized scores, which are typically converted to probabilities (for example,
 using softmax).
 
+<br>
+
 # Exporting to TorchScript
 > src/export_torchscript.py
 
@@ -63,6 +67,8 @@ I'll use tracing since MobileNet‑V2 is pure feed-forward CNN with no dynamic c
 - Trace the model
 - Save the TorchScript file to disk
 
+<br>
+
 # Testing TorchScript model
 > src/test_torchscript.py
 
@@ -74,6 +80,8 @@ shape (same as eager model), and to verify TorchScript inference works end-to-en
 So far I confirmed that Eager and TorchScript model work, they produce the same output shape, and both
 run on CPU. This means pipeline is stable and ready for benchmarking, quantization, model size comparison,
 memory profiling.
+
+<br>
 
 # Benchmarking Eager vs TorchScript
 > src/benchmark_basic.py
@@ -97,6 +105,8 @@ This step gives first real performance numbers.
 **Benchmarking results:**
 - Eager mode: 24.75ms
 - TorchScript: 16.21ms
+
+<br>
 
 # Adding Image Preprocessing
 > src/preprocess.py
@@ -137,6 +147,8 @@ def load_image(path):
 ```
 I now have a reusable function **load_image("path/to/image.jpg")** which returns a properly normalized image tensor ready for Eager and TorchScript models, quantizied models, benchmarking, mobile runtimes, etc.
 
+<br>
+
 # Benchmarking Eager vs TorchScript with Real Image
 > src/benchmark_real_image.py
 
@@ -153,6 +165,8 @@ Now that I have real image preprocessing, I can benchmark Eager vs TorchScript u
 - Eager mode: 16.52ms
 - TorchScript: 12.40ms
 
+<br>
+
 # Dynamic Quantization (INT8)
 > src/quantize_dynamic.py
 
@@ -166,17 +180,24 @@ This is the first and easiest mobile optimization technique. It can be applied t
 Dynamic quantization is a technique that reduces model size and can improve inference speed by converting weights and activations from 32-bit floating point (FP32) to 8-bit integers (INT8).\
 This is especially beneficial for CPU inference, which is common in mobile and edge devices.
 
-**Size comparison:**
-- FP32 TorchScript: 13.88MB
-- INT8 Dynamic Quantized: 10.22MB
+**Additional note:**\
+What are weiths and activations?
+- Weights: The parameters of the model that are learned during training (e.g. convolutional filters, fully connected layer weights). These are fixed after training and can be quantized ahead of time.
+- Activations: The intermediate outputs of the model during inference (e.g. feature maps after convolutional layers). These can vary widely depending on the input data, so they are quantized dynamically during inference.
 
-After applying dynamic quantization to the MobileNet‑V2 model, model size is reduced from 13.88MB to 10.22MB which is less than expected (4× smaller would be around 3.5MB). This is likely because dynamnic quantization only quantizes nn.Linear layers, and MobileNet‑V2 has a lot of convolutional layers which remain in FP32.
+**Size comparison:**
+- FP32 TorchScript: 13.8MB
+- INT8 Dynamic Quantized: 10.2MB
+
+After applying dynamic quantization to the MobileNet‑V2 model, model size is reduced from 13.8MB to 10.2MB which is less than expected (4× smaller would be around 3.5MB). This is likely because dynamnic quantization only quantizes nn.Linear layers, and MobileNet‑V2 has a lot of convolutional layers which remain in FP32.
 
 **Benchmarking results:**
 - FP32 TorchScript: 14.12ms
 - INT8 Dynamic Quantized: 12.01ms
 
 It's worth mentioning that on ARM CPUs, the speedup would be even more significant, often 2–4× faster than FP32. The 15% speedup observed here on desktop CPU is a good sign that quantization is working, but the real benefits will be seen on mobile devices.
+
+<br>
 
 # What is achieved so far?
 - FP32 eager model
@@ -187,5 +208,53 @@ It's worth mentioning that on ARM CPUs, the speedup would be even more significa
 - Model size comparison
 - Latency comparison
 
+<br>
+
 # Static Quantization (INT8)
 > src/quantize_static.py
+
+This is where PyTorch Mobile really shines.
+
+Static quantization is a more advanced technique that quantizes both weights and activations to INT8. Weights are quantized ahead of time, while activations are quantized dynamically during inference. This can lead to even smaller model size and faster inference compared to dynamic quantization, but it typically requires calibration with a representative dataset (a set of real images) to determine the appropriate scaling factors for activations (estimate activation ranges).
+
+For this step, I will use 50 real images downloaded from the web rather than >500 ImageNet validation images. My goal is is to measure latency, model size, RAM and CPU usage, and potentially energy consumption on mobile devices - accuracy is not the focus here, so a small calibration dataset is sufficient.
+
+**Static quantization will give the following benefits:**
+- INT8 weights + INT8 activations
+- Even smaller model size than dynamic quantization (potentially 4× smaller than FP32)
+- Faster inference on CPU (especially on mobile/edge devices)
+- Minimal accuracy loss (usually less than 1% for image classification)
+- Operator fusion (combining multiple operations into one for better performance - Conv2d + BN + ReLU)
+- Mobile-friendly execution graph (optimized for mobile runtimes)
+
+I have created two static quantized models: one optimized for ARM CPUs (qnnpack) and one optimized for x86 CPUs (fbgemm).
+Size comparison of all models and benchmarking results are below (note that all benchmarks so far are on desktop CPU - x86).
+
+**Size comparison:**
+- FP32 TorchScript: 13.8MB
+- INT8 Dynamic Quantized: 10.2MB
+- INT8 Static Quantized (fbgemm): 4MB
+- INT8 Static Quantized (qnnpack): 3.7MB
+
+# Benchmarking results:**
+- FP32 TorchScript: 14.54 ms
+- INT8 Dynamic Quant: 13.16 ms
+- INT8 Static Quant (x86_fbgemm): 4.83 ms
+- INT8 Static Quant (ARM_qnnpack): 4.20 ms
+
+Even on x86, QNNPACK is slightly faster for MobileNet-V2 than FBGEMM, which is interesting since FBGEMM is optimized for x86. This may be because:
+- MobileNet-V2 uses depthwise convolultion heavily, and QNNPACK has better support for quantized depthwise convolution.
+- QNNPACK has highly optimized depthwise kernels that can outperform FBGEMM on certain models and hardware.
+- FBGEMM is optimized for large GEMM operations (e.g. Transformer models, ResNets) rather than small convolutional layers.
+
+On ARM CPUs, the gap should be even larger, with QNNPACK significantly outperforming FBGEMM due to its optimizations for mobile workloads and better support for depthwise convolution.
+
+Now I have a complete PyTorch Mobile optimization pipeline:
+- FP32 TorchScript model
+- INT8 dynamic quantized model
+- INT8 static quantized model FX graph mode (x86_fbgemm)
+- INT8 static quantized model FX graph mode (ARM_qnnpack)
+- Real‑image preprocessing
+- Real‑image benchmarking
+- Model size comparison
+- Latency comparison
