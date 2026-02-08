@@ -1,6 +1,17 @@
 Before comparing PyTorch Mobile, ONNX Runtime, and TensorFlow Lite, I’ll first compare eager PyTorch and TorchScript
 models to validate the pipeline before going mobile. This provides a baseline in case issues arise later (quantization,
-mobile runtimes, ONNX export, etc.), making it easier to pinpoint where problems occur and to sanity-check performance.
+mobile runtimes), making it easier to pinpoint where problems occur and to sanity-check performance.
+
+<br>
+
+### Setup:
+- Python 3.10.12
+- Python virtual environment (venv) & cpu-only PyTorch + TorchVision installation:
+``` bash
+python3 -m venv .venv
+pip install --upgrade pip
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+```
 
 <br>
 
@@ -199,7 +210,7 @@ It's worth mentioning that on ARM CPUs, the speedup would be even more significa
 
 <br>
 
-# What is achieved so far?
+**What is achieved so far?**
 - FP32 eager model
 - FP32 TorchScript model
 - INT8 dynamic quantized TorchScript model
@@ -211,6 +222,10 @@ It's worth mentioning that on ARM CPUs, the speedup would be even more significa
 <br>
 
 # Static Quantization (INT8)
+
+### This marks the beginning of the full mobile optimization pipeline. While the process could technically have started at this stage, I chose to build the pipeline incrementally, validating and benchmarking each phase before introducing mobile optimization.
+### For qualitative metrics such as developer experience, the earlier stages can be considered optional, as this step—together with the next—produces the final mobile-ready artifact.
+
 > src/quantize_static.py
 
 This is where PyTorch Mobile really shines.
@@ -236,7 +251,7 @@ Size comparison of all models and benchmarking results are below (note that all 
 - INT8 Static Quantized (fbgemm): 4MB
 - INT8 Static Quantized (qnnpack): 3.7MB
 
-# Benchmarking results:**
+**Benchmarking results:**
 - FP32 TorchScript: 14.54 ms
 - INT8 Dynamic Quant: 13.16 ms
 - INT8 Static Quant (x86_fbgemm): 4.83 ms
@@ -249,7 +264,7 @@ Even on x86, QNNPACK is slightly faster for MobileNet-V2 than FBGEMM, which is i
 
 On ARM CPUs, the gap should be even larger, with QNNPACK significantly outperforming FBGEMM due to its optimizations for mobile workloads and better support for depthwise convolution.
 
-Now I have a complete PyTorch Mobile optimization pipeline:
+**Now I have a complete PyTorch Mobile optimization pipeline:**
 - FP32 TorchScript model
 - INT8 dynamic quantized model
 - INT8 static quantized model FX graph mode (x86_fbgemm)
@@ -258,3 +273,40 @@ Now I have a complete PyTorch Mobile optimization pipeline:
 - Real‑image benchmarking
 - Model size comparison
 - Latency comparison
+
+# Optimize for Mobile Runtimes
+> src/optimize_for_mobile.py
+
+This is the final step in the PyTorch Mobile pipeline. After quantization, I will optimize the model for mobile runtimes (Android/iOS) using PyTorch's built-in optimization tools. This is the final transformation before I deploy to a phone.
+
+**Optimizing for mobile runtimes will give the following benefits:**
+- Faster model load time
+- Smaller model size
+- Additional operator fusion
+- Removal of unused ops
+- A .ptl file (Lite Interpreter format)
+- Better performance on Android devices
+
+Why this step matters - even after static quantization, the model is still a 'general' TorchScript model that can run on desktop and mobile. However, it may contain operators or patterns that are not optimal for mobile runtimes.
+
+**optimize_for_mobile** applies mobile-specific optimizations such as:
+- Selective operator loading
+- Constant folding
+- Conv/BN/ReLU fusion
+- Removal of training‑only ops
+- Memory layout improvements
+
+**_save_for_lite_interpreter** converts the optimized model into a .ptl file, which is a format specifically designed for the PyTorch Lite Interpreter used in mobile apps. This format is more compact and faster to load on mobile devices: loads faster, is smaller, works with Lite Interpreter which is the recommented mobile runtime for Android/iOS.
+
+**Final model size**:
+- INT8 Static Quantized (qnnpack): 3.7MB
+- INT8 Static Quantized (ARM_qnnpack) optimized for mobile: 6.8MB
+
+The increase in size might look surprising, but it's actually normal. The .pt file (before mobile optimization) is mostly just the weights + minimal graph structure, while the .ptl file (after mobile optimization) includes additional metadata, operator definitions, bytecode for the Lite Interpreter, and mobile-specific optimizations that can increase the file size. The .ptl format is optimized for mobile loading and execution, not for minimal file size.\
+
+On device, what matter is:
+- it loads faster
+- runs with the Lite Interpreter
+- uses QNNPACK INT8 kernels
+
+So: 3.7 MB → 6.8 MB is not a regression, it’s just a different packaging format.
