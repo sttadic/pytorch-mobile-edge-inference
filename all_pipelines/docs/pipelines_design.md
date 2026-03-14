@@ -164,3 +164,47 @@ To ensure results are attributable to frameworks and not environment noise:
   wouldn't change at all.
 
   So for Pi 4B only we are good to go.
+
+---
+
+> Question:
+> `pipeline_tflite.py` (original) vs `pipeline_tflite_v1.py` — which should be used?
+
+**Decision: use the original (`pipeline_tflite.py`).**
+
+Evaluated against the two governing criteria — as-close-as-possible process across pipelines + best of what each framework offers:
+
+**Best of what TFLite offers:**
+`pipeline_tflite_v1.py` explicitly sets `quant_type="per-tensor"`, which is a downgrade from TFLite's native default. TFLite/XNNPACK's genuine strength for conv layers is per-channel weights, which is what `Optimize.DEFAULT` delivers in the original. v1 actively suppresses it.
+
+**As-close-as-possible process:**
+v1 outsources the quantization step entirely to onnx2tf's internal path (`output_integer_quantized_tflite=True` + `-cind`). The original keeps quantization in `TFLiteConverter` — the same conceptual layer as `torch.ao.quantization` (PyTorch) and `onnxruntime.quantization` (ORT). All three pipelines using their framework's own official quantization API is the closest process alignment achievable. In v1, onnx2tf handles both conversion and quantization as a black box — a different process, not a closer one.
+
+v1's only genuine improvements are opset 18 (more modern) and skipping the SavedModel intermediate (cleaner pipeline). Neither affects benchmark output.
+
+`pipeline_tflite_v1.py` is superseded and should not be used.
+
+---
+
+> Question:
+> Why not use Keras MobileNetV2 for the TFLite pipeline (`pipeline_tflite_v2.py`)?
+
+Entire benchmark is about comparing frameworks, not models.
+
+If TFLite uses Keras weights and PyTorch Mobile + ORT both use PyTorch DEFAULT weights, you're now benchmarking three things
+  simultaneously: the framework, the conversion path, and the model. Any latency or accuracy difference is unattributable. You can't answer "which framework is faster?" — only "which framework +
+  weight combination is faster?", which is a different and less useful question.
+
+  The Keras native path would make sense as a separate experiment — "what does a developer get if they stay entirely within the TF ecosystem?" — but not as a primary benchmark pipeline alongside
+  the others. 
+  
+  `pipeline_tflite_v2.py` is not used.
+
+---
+
+> Question:
+> Should opset 18 or the direct ONNX → TFLite path (no SavedModel) from `pipeline_tflite_v1.py` be backported into the original?
+
+**Skipping SavedModel — no.** The SavedModel intermediate is the price of keeping `TFLiteConverter` in charge of quantization. onnx2tf can either produce a SavedModel or produce a quantized TFLite directly — not both. Remove the SavedModel step and quantization falls to onnx2tf, which means per-tensor. That is exactly the v1 trade-off that was already rejected.
+
+**Opset 18 — valid but not urgent.** Upgrading is low risk for MobileNet-V2's simple ops, and newer opsets are better supported by onnx2tf. However, the ONNX file is shared between the TFLite and ORT pipelines — `pipeline_ort_mobile.py` also exports opset 12. Both would need to change together to stay consistent. Since opset 12 is not broken for this model and the change has no effect on benchmark results, defer to a cleanup pass once pipelines are otherwise finalised.
