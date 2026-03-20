@@ -2,7 +2,7 @@
 Pipeline 3 – ONNX Runtime Mobile (.onnx, INT8)
 
   PyTorch MobileNet-V2 (DEFAULT weights)
-  → ONNX export (opset 12, shared with TFLite pipeline)
+  → ONNX export (opset 18, shared with TFLite pipeline)
   → ORT static INT8 quantization (QDQ format, per-channel weights)
 
 Dependencies
@@ -70,7 +70,7 @@ def export_onnx(onnx_path: str):
         onnx_path,
         input_names=["input"],
         output_names=["output"],
-        opset_version=12,
+        opset_version=18,
         do_constant_folding=True,
         dynamic_axes=None,
     )

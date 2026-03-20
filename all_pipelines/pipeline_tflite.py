@@ -2,7 +2,7 @@
 Pipeline 2 – TensorFlow Lite (.tflite)
 
   PyTorch MobileNet-V2 (DEFAULT weights)
-  → ONNX export (opset 12, shared with ORT pipeline)
+  → ONNX export (opset 18, shared with ORT pipeline)
   → TF SavedModel via onnx2tf  [NCHW → NHWC transposed automatically]
   → TFLite full-integer INT8 quantization (float32 I/O, XNNPACK-ready)
 
@@ -54,7 +54,7 @@ OUTPUT_PATH     = "models/tflite/mobilenet_v2_static_quantized.tflite"
 
 
 def export_onnx(onnx_path: str):
-    """Export PyTorch MobileNet-V2 to ONNX (NCHW, opset 12)."""
+    """Export PyTorch MobileNet-V2 to ONNX (NCHW, opset 18)."""
     print("Exporting PyTorch model to ONNX...")
     model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
     model.eval()
@@ -66,7 +66,7 @@ def export_onnx(onnx_path: str):
         onnx_path,
         input_names=["input"],
         output_names=["output"],
-        opset_version=12,
+        opset_version=18,
         do_constant_folding=True,
         dynamic_axes=None,
     )
